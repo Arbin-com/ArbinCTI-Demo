@@ -4,7 +4,7 @@ load("coreclr")
 import clr
 clr.AddReference("System")
 import System
-
+from datetime import datetime
 from System.Collections.Generic import List
 from System import *
 import time
@@ -59,7 +59,7 @@ import AIClient
 import Arbin        # ArbinDataModel
 
 
-###################CONFIG###################
+###################Config###################
 SN = "oct21"
 username = "admin"
 def mycreateContinueChannelArgs():
@@ -84,6 +84,12 @@ def createScheduleArgs(scheduleName):
     args.ChannelIDs.Add(1)
     return args
 
+def createBrowseFileListArgs():
+    args = Arbin.Library.DataModel.TestManagement.BrowseFileListArgs()
+    args.SN = SN
+    args.FileType = Arbin.Library.DataModel.EAIFileType.Schedule
+    return args
+
 def createBarcodeArgs(barcode):
     barcodeInfo = Arbin.Library.DataModel.Common.BarcodeInfo()
     barcodeInfo.GlobalID = 1
@@ -96,11 +102,14 @@ def createBarcodeArgs(barcode):
     args.BarcodeInfos.Add(barcodeInfo)
     return args
 
-def createStartChannelArgs(scheduleName):
+def createStartChannelArgs(scheduleName,barcode):
     channelResumeData = Arbin.Library.DataModel.Common.ChannelResumeData()
     channelResumeData.ChannelID = 1
     channelResumeData.TestNames = List[String]()
-    channelResumeData.TestNames.Add("Test")
+    now = datetime.now()
+    formatted_datetime = now.strftime('%Y-%m-%d_%H-%M')
+    testName = f"{barcode}_{formatted_datetime}"
+    channelResumeData.TestNames.Add(f"{barcode}_{formatted_datetime}")
     channelResumeData.ScheduleName = scheduleName
 
     args = Arbin.Library.DataModel.ChannelManagement.StartChannelArgs()
@@ -108,9 +117,11 @@ def createStartChannelArgs(scheduleName):
     args.SN = SN
     args.ChannelResumeDatas = List[Arbin.Library.DataModel.Common.ChannelResumeData]()
     args.ChannelResumeDatas.Add(channelResumeData)
-    return args
+    return args,testName
 
 ###############Event Listener#######################
+listenerStatus = 0  # 0 =  not recived, 1 = received success, string = error message
+fileList = []
 def barCodeEventHandler(*args):
     global listenerStatus
     result = next((x for x in args[0].BarcodeInfos if x.Result != "Success"), None)
@@ -135,70 +146,104 @@ def startChannelEventHandler(*args):
     else:
         listenerStatus = args[0].FailedResults[0].Result
 
-listenerStatus = 0  # 0 =  not recived, 1 = received success, string = error message
-####################################
+def startBrowseFileEventHandler(*args):
+    global listenerStatus
+    global fileList
+    result = args[0].Result
+    if result == "Success":
+        fileList = []
+        for file in args[0].DirFileInfoList:
+            fileList.append(file.DirFileName)
+        listenerStatus = 1
+    else:
+        listenerStatus = args[0].FailedResults[0].Result
+########################Request################################
 args = mycreateAIClientArgs()
 err = System.Int32(0)
+
+def getSchedule(client):
+    global listenerStatus
+    client.OnBrowseFileList += startBrowseFileEventHandler
+    bGetSchedule = client.BrowseFileList(createBrowseFileListArgs())
+    if bGetSchedule == False:
+        print("[Demo] Get schedule failed,please restart and try again.")
+        return None
+    while listenerStatus == 0:
+        time.sleep(0.5)
+    if listenerStatus == 1:
+        listenerStatus = 0
+        print("[Demo] Get schedule succeeded!")
+        print("[Demo] Schedule list:")
+        for file in fileList:
+            print(file)
+        return input("\n[Demo] Please enter the schedule name for the test: ")
+    else:
+        print(f"[Demo] Get schedule failed, error message:{listenerStatus},please restart and try again.")
+        return None
+    
+def assignSchedule(client):
+    global listenerStatus
+    client.OnAssignFile += fileEventHandler
+    userInput = input("\n[Demo] To start the test with schedule \"test.sdx\" (Enter 'yes' or 'no' to show all the schedules): ")
+    if userInput == "yes":
+        scheduleName = 'test'
+    else:
+        scheduleName = getSchedule(client)
+    if scheduleName == None:
+        return None
+    bAssign = client.AssignFile(createScheduleArgs(scheduleName))
+    if bAssign == False:
+        print("[Demo] Assign schedule failed,please restart and try again.")
+        return None
+    while listenerStatus == 0:
+        time.sleep(0.5)
+    if listenerStatus == 1:
+        listenerStatus = 0
+        print(f"[Demo] Assign schedule succeeded! Schedule name: {scheduleName}.sdx")
+        return scheduleName
+    else:
+        print(f"[Demo] Assign schedule failed, error message: {listenerStatus},please restart and try again.")  
+        return None
+    
+def startChannel(client,scheduleName,barcode):
+    global listenerStatus
+    client.OnStartChannel += startChannelEventHandler
+    args,testName = createStartChannelArgs(scheduleName+".sdx",barcode)
+    bStartChannel = client.StartChannel(args)
+    if bStartChannel == False:
+        print("[Demo] Start Channel failed,please restart and try again.")
+    while listenerStatus == 0:
+        time.sleep(0.5)
+    if listenerStatus == 1:
+        print(f"[Demo] Start Channel succeeded! Test Name: {testName}")
+    else:
+        print(f"[Demo] Start Channel failed, error message {listenerStatus},please restart and try again.")
+    
 def getBarcode(client):
     global listenerStatus
     client.OnAssignBarcodeInfo += barCodeEventHandler
-    client.OnAssignFile += fileEventHandler
-    client.OnStartChannel += startChannelEventHandler
     while True:
-        user_input = input("[Demo] Please enter a barcode (or 'q' to quit):").strip()
-        if user_input == "q":
-            print("\n[Demo] Goodbye!")
-            break
-        elif user_input.startswith( 'a' ):
-            barcodeArg = createBarcodeArgs(user_input)
+        userInputBarcode = input("[Demo] Please enter a barcode:").strip()
+        if userInputBarcode.startswith( 'a' ):
+            barcodeArg = createBarcodeArgs(userInputBarcode)
             bSend = client.AssignBarcodeInfo(barcodeArg)
             if bSend == False:
                 print("[Demo] Assign Barcode failed,please try again.")
-                continue
+                return None
             while listenerStatus == 0:
                 time.sleep(0.5)
             if listenerStatus == 1:
                 listenerStatus = 0
                 print("[Demo] Assign Barcode succeeded!")
-                more_info = input("\n[Demo] To start the test with \"Test\" (Enter 'yes' or other schedule name): ")
-                bAssign,scheduleName = assignSchedule(more_info,client)
-                if bAssign == False:
-                    print("[Demo] Assign schedule failed,please restart and try again.")
-                while listenerStatus == 0:
-                    time.sleep(0.5)
-                if listenerStatus == 1:
-                    listenerStatus = 0
-                    print("[Demo] Assign schedule succeeded! Start channel request sent.")
-
-                    bStartChannel = client.StartChannel(createStartChannelArgs(scheduleName+".sdx"))
-                    if bStartChannel == False:
-                        print("[Demo] Start Channel failed,please restart and try again.")
-                    while listenerStatus == 0:
-                        time.sleep(0.5)
-                    if listenerStatus == 1:
-                        print("[Demo] Start Channel succeeded! Test starts")
-                    else:
-                        print(f"[Demo] Start Channel failed, error message{listenerStatus},please restart and try again.")
-                    break
-                else:
-                    print(f"[Demo] Assign schedule failed, error message: {listenerStatus},please restart and try again.")  
-                    break 
+                return userInputBarcode
             elif listenerStatus == 2:
                 print(f"[Demo] Assign Barcode failed, error message: {listenerStatus},please try again.")
+                return None
         else:
-            print(f"[Demo] Sorry, '{user_input}' invalid barcode, please try again.")
+            print(f"[Demo] Sorry, '{userInputBarcode}' is a invalid barcode, please try again.")
 
-def assignSchedule(more_info,client):
-    scheduleName = "Test"
-    if more_info.lower() == "yes" or more_info == "":
-        scheduleName = "Test"
-    else:
-        scheduleName = more_info
-    args = createScheduleArgs(scheduleName)
-    bSend = client.AssignFile(args)
-    return (bSend,scheduleName)
+###########################Main#################################
 try:
-    #client = AIClient.Core.AIClient()
     client = AIClient.Core.AIClient.CreateAIClient(args, err)
     if client[0] == None:
         print(f"\n[Demo] Connection to AIClient failed! Please restart and try again.")
@@ -207,7 +252,11 @@ try:
         if bConnected:
             print(f"[Demo] Connection to AIClient established!")
             print(f"\n[Demo] Welcome to HTE demo!")
-            getBarcode(client[0])
+            scheduleResult = assignSchedule(client[0])
+            if scheduleResult != None:
+                barcodeResult = getBarcode(client[0])
+                if barcodeResult != None:
+                    startChannel(client[0],scheduleResult,barcodeResult)
         else:
             print(f"\n[Demo] Connection to AIClient failed! Please restart and try again.")
 except Exception as e:
