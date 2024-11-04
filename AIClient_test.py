@@ -1,263 +1,261 @@
-from pythonnet import load
-load("coreclr")
-
+import os
+import sys
 import clr
-clr.AddReference("System")
-import System
-from datetime import datetime
-from System.Collections.Generic import List
-from System import *
 import time
-dll_root = "DLL/"
-references = [
-    #"Newtonsoft.Json",  # dependents: ArbinCTI, ArbinMQ, AIClient
-    "ArbinDataModel",   # dependents: ArbinMQ, AIClient
-    #"NetMQ",            # dependents: ArbinMQ 
-    #"NaCl",             # dependents: ArbinMQ
-    #"AsyncIO",          # dependents: ArbinMQ
-    "ArbinMQ",
-    "ArbinCTI",         # dependents: AIClient
-    "AIClient"          
-]
+newpath = os.path.dirname(os.path.abspath(__file__)) + '\\DLL'
+sys.path.append(newpath)
+clr.AddReference("System.Collections")
+from System.Collections.Generic import List
+from System import Int32
+from System import UInt16
+from datetime import datetime
+classDLL = clr.AddReference('ArbinCTI')
+from ArbinCTI.Core.Control import ArbinControlLabView
+from ArbinCTI.Core import *
 
-def copy_dll_to_runtime(source_dll):
-    import os, shutil, site
-    # Find the pythonnet runtime folder
-    site_packages = site.getsitepackages()
-    for path in site_packages:
-        runtime_path = os.path.join(path, 'pythonnet', 'runtime')
-        if os.path.exists(runtime_path):
-            destination = os.path.join(runtime_path, 'ArbinDataModel.dll')
-            try:
-                shutil.copy2(source_dll, destination)
-                print(f"[Demo] Successfully copied ArbinDataModel.dll to {destination}")
-                return True
-            except Exception as e:
-                print(f"[Demo] Error copying DLL: {e}")
-    
-    print("[Demo] Could not find pythonnet runtime folder")
-    return False
+################### Config ###################
+class ProgramConst(object):
+    __slots__ = ()
+    USER = "admin"
+    PASSWORD = "000000"
+    IP = "127.0.0.1"
+    CTI_PORT = 9031
 
-#copy_dll_to_runtime("DLL/ArbinDataModel.dll")
+ProgramConst = ProgramConst()
+g_programRunning = True
+g_IVChannelCount = 0
+g_bLogin = False
+g_bSchedule = False
+g_bBrowse = False
+g_bBarcode = False
+g_bChannel = False
+g_client = None
+g_bError = False
+g_scheduleName = ""
+channelIndex = 0
+g_ctrl = ArbinControlLabView()
+g_ctrl.Start()
 
-for ref in references:
-    try:
-        # System.Reflection.Assembly.LoadFrom(ref + ".dll")
-        clr.AddReference(dll_root + ref)
-        print(f"[Demo] {ref}.dll loaded successfully.")
-    except System.IO.FileNotFoundException as e:
-        print(f"[Demo] Error: {ref}.dll not found.")
-        raise e
-    except System.IO.FileLoadException as e:
-        print(f"[Demo] Error: {ref}.dll or its dependencies failed to load.")
-        raise ref
-    except Exception as e:
-        print(f"[Demo] Error: Failed to load {ref}.dll due to an unexpected error.")
-        raise e
-    
-import AIClient
-import Arbin        # ArbinDataModel
+######################## Response Status ################################
+loginResultTokenMap = {
+    ArbinCommandLoginFeed.LOGIN_RESULT.CTI_LOGIN_SUCCESS : 'CTI_LOGIN_SUCCESS',
+    ArbinCommandLoginFeed.LOGIN_RESULT.CTI_LOGIN_FAILED : 'CTI_LOGIN_FAILED',
+    ArbinCommandLoginFeed.LOGIN_RESULT.CTI_LOGIN_BEFORE_SUCCESS : 'CTI_LOGIN_BEFORE_SUCCESS',
+}
+browseDirectoryResultMap = {
+    ArbinCommandBrowseDirectoryFeed.BROWSE_DIRECTORY_RESULT.CTI_BROWSE_DIRECTORY_SUCCESS : 'BROWSE_DIRECTORY_SUCCESS',
+    ArbinCommandBrowseDirectoryFeed.BROWSE_DIRECTORY_RESULT.CTI_BROWSE_SCHEDULE_VERSION1_SUCCESS:"CTI_BROWSE_SCHEDULE_VERSION1_SUCCESS",
+    ArbinCommandBrowseDirectoryFeed.BROWSE_DIRECTORY_RESULT.CTI_BROWSE_SCHEDULE_SUCCESS : 'BROWSE_SCHEDULE_SUCCESS',
+    ArbinCommandBrowseDirectoryFeed.BROWSE_DIRECTORY_RESULT.CTI_BROWSE_DIRECTORY_FAILED : 'BROWSE_DIRECTORY_FAILED',
+}
+assignChannelTokenMap = {
+    ArbinCommandAssignScheduleFeed.ASSIGN_TOKEN.CTI_ASSIGN_SUCCESS : 'CTI_ASSIGN_SUCCESS',
+    ArbinCommandAssignScheduleFeed.ASSIGN_TOKEN.CTI_ASSIGN_INDEX : 'CTI_ASSIGN_INDEX',
+    ArbinCommandAssignScheduleFeed.ASSIGN_TOKEN.CTI_ASSIGN_ERROR : 'CTI_ASSIGN_ERROR',
+    ArbinCommandAssignScheduleFeed.ASSIGN_TOKEN.CTI_ASSIGN_SCHEDULE_NAME_EMPTY_ERROR : 'CTI_ASSIGN_SCHEDULE_NAME_EMPTY_ERROR',
+    ArbinCommandAssignScheduleFeed.ASSIGN_TOKEN.CTI_ASSIGN_SCHEDULE_NOT_FIND_ERROR : 'CTI_ASSIGN_SCHEDULE_NOT_FIND_ERROR',
+    ArbinCommandAssignScheduleFeed.ASSIGN_TOKEN.CTI_ASSIGN_CHANNEL_RUNNING_ERROR : 'CTI_ASSIGN_CHANNEL_RUNNING_ERROR',
+    ArbinCommandAssignScheduleFeed.ASSIGN_TOKEN.CTI_ASSIGN_CHANNEL_DOWNLOAD_ERROR : 'CTI_ASSIGN_CHANNEL_DOWNLOAD_ERROR',
+    ArbinCommandAssignScheduleFeed.ASSIGN_TOKEN.CTI_ASSIGN_BACTH_FILE_OPENED : 'CTI_ASSIGN_BATCH_FILE_OPENED',
+    ArbinCommandAssignScheduleFeed.ASSIGN_TOKEN.CTI_ASSIGN_SDU_SAVE_FAILED : 'CTI_ASSIGN_SDU_SAVE_FAILED',
+}
+assignBarcodeTokenMap = {
+    ArbinCommandAssignBarcodeInfoFeed.ASSIGN_BARCODE_RESULT.CTI_ASSIGN_BARCODE_SUCCESS : 'CTI_ASSIGN_BARCODE_SUCCESS',
+    ArbinCommandAssignBarcodeInfoFeed.ASSIGN_BARCODE_RESULT.CTI_ASSIGN_BARCODE_CHANNEL_TYPE_NOT_SUPPORT : 'CTI_ASSIGN_BARCODE_CHANNEL_TYPE_NOT_SUPPORT',
+    ArbinCommandAssignBarcodeInfoFeed.ASSIGN_BARCODE_RESULT.CTI_ASSIGN_BARCODE_CHANNEL_RUNNING : 'CTI_ASSIGN_BARCODE_CHANNEL_RUNNING',
+    ArbinCommandAssignBarcodeInfoFeed.ASSIGN_BARCODE_RESULT.CTI_ASSIGN_BARCODE_CHANNEL_INDEX : 'CTI_ASSIGN_BARCODE_CHANNEL_INDEX'
+}
+startChannelTokenMap = {
+    ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_SUCCESS : 'CTI_START_SUCCESS',
+    ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_INDEX :'CTI_START_INDEX',
+    ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_ERROR : 'CTI_START_ERROR',
+    ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_CHANNEL_RUNNING : 'CTI_START_CHANNEL_RUNNING',
+    ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_CHANNEL_NOT_CONNECT : 'CTI_START_CHANNEL_NOT_CONNECT',
+    ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_SCHEDULE_VALID : 'CTI_START_SCHEDULE_VALID',
+    ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_NO_SCHEDULE_ASSIGNED : 'CTI_START_NO_SCHEDULE_ASSIGNED',
+    ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_SCHEDULE_VERSION : 'CTI_START_SCHEDULE_VERSION',
+    ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_POWER_PROTECTED : 'CTI_START_POWER_PROTECTED',
+    ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_RESULTS_FILE_SIZE_LIMIT : 'CTI_START_RESULTS_FILE_SIZE_LIMIT',
+    ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_STEP_NUMBER : 'CTI_START_STEP_NUMBER',
+    ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_NO_CAN_CONFIGURATON_ASSIGNED : 'CTI_START_NO_CAN_CONFIGURATON_ASSIGNED',
+    ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_AUX_CHANNEL_MAP : 'CTI_START_AUX_CHANNEL_MAP',
+    ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_BUILD_AUX_COUNT : 'CTI_START_BUILD_AUX_COUNT',
+    ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_POWER_CLAMP_CHECK : 'CTI_START_POWER_CLAMP_CHECK',
+    ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_AI : 'CTI_START_AI',
+    ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_SAFOR_GROUPCHAN : 'CTI_START_SAFOR_GROUPCHAN',
+    ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_BT6000RUNNINGGROUP : 'CTI_START_BT6000RUNNINGGROUP',
+    ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_CHANNEL_DOWNLOADING_SCHEDULE : 'CTI_START_CHANNEL_DOWNLOADING_SCHEDULE',
+    ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_DATABASE_QUERY_TEST_NAME_ERROR : 'CTI_START_DATABASE_QUERY_TEST_NAME_ERROR',
+    ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_TEXTNAME_EXITS : 'CTI_START_TEXTNAME_EXITS',
+    ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_GO_STEP : 'CTI_START_GO_STEP',
+    ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_INVALID_PARALLEL : 'CTI_START_INVALID_PARALLEL',
+}
+############### Event Listener #######################
+def LoginFeedbackEvent(cmd):
+    if(cmd is  None):
+        print("[Demo] Login failed!")
+        return
+    global g_IVChannelCount
+    global g_bLogin
+    test = cmd.Result
+    if(cmd.Result == ArbinCommandLoginFeed.LOGIN_RESULT.CTI_LOGIN_SUCCESS):
+        g_bLogin = True 
+    if(cmd is not None):
+        g_IVChannelCount = cmd.ChannelNum
 
+def AssignSchFeedBackEvent(cmd):
+    global g_bSchedule
+    global g_bError
+    if(cmd.Result == ArbinCommandAssignScheduleFeed.ASSIGN_TOKEN.CTI_ASSIGN_SUCCESS):
+        print("[Demo] Assign Schedule Success!")
+        g_bSchedule = True
+    else:
+        print("[Demo] Assign Schedule Failed! Error: {}".format(assignChannelTokenMap[cmd.Result]))
+        g_bError = True
 
-###################Config###################
-SN = "oct21"
-username = "admin"
-def mycreateContinueChannelArgs():
-    args = Arbin.Library.DataModel.ChannelManagement.ContinueChannelArgs()
-    args.SN = SN
-    return args
+def StartFeedEvent(cmd):
+    global g_bChannel
+    global g_bError
+    if(cmd.Result == ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_SUCCESS):
+        print(f"[Demo] Start Channel succeeded!")
+        g_bChannel = True
+    else:
+        print("[Demo] Start Channel Failed! Error: {}".format(startChannelTokenMap[cmd.Result]))
+        g_bError = True
 
-def mycreateAIClientArgs():
-    args = AIClient.Core.CreateAIClientArgs()
-    args.IPAddress = "127.0.0.1"
-    args.UserName = username
-    args.Password = "000000"
-    args.Timeout = 15000
-    return args
+def AssignBarcodeInfoFeedBackEvent(cmd):
+    global g_bBarcode
+    global g_bError
+    if(cmd.BarcodeInfos[0].Error == ArbinCommandAssignBarcodeInfoFeed.ASSIGN_BARCODE_RESULT.CTI_ASSIGN_BARCODE_SUCCESS):
+        print(f"[Demo] Assign Barcode succeeded!")
+        g_bBarcode = True
+    else:
+        print("[Demo] Assign Barcode Failed! Error: {}".format(assignBarcodeTokenMap[cmd.Result]))
+        g_bError = True
 
-def createScheduleArgs(scheduleName):
-    args = Arbin.Library.DataModel.TestManagement.AssignFileArgs()
-    args.FileName = scheduleName + '.sdx'
-    args.SN = SN
-    args.FileType = Arbin.Library.DataModel.EAIFileType.Schedule
-    args.ChannelIDs = List[System.Int32]()
-    args.ChannelIDs.Add(1)
-    return args
+def BrowseFeedEvent(cmd):
+    global g_bError
+    global g_bBrowse
+    global g_scheduleName
+    DirInfolist = cmd.DirFileInfoList
+    if(cmd.Result != ArbinCommandBrowseDirectoryFeed.BROWSE_DIRECTORY_RESULT.CTI_BROWSE_DIRECTORY_FAILED ):
+        print(f"[Demo] Browse schedule succeeded!")
+    else:
+        print("[Demo] Browse schedule Failed! Error: {}".format(browseDirectoryResultMap[cmd.Result]))
+        g_bError = True
+    while True:
+        print("[Demo] Select schedule file:")
+        for idx, file in enumerate(DirInfolist):
+            print(f"{idx + 1}: {file.DirFileName}")
+        user_input = input("[Demo] Enter the number of the schedule you want to use: ")
+        selected_index = int(user_input) - 1
+        if 0 <= selected_index < len(DirInfolist):
+            selected_file = DirInfolist[selected_index]
+            print(f"[Demo] Selected file: {selected_file.DirFileName}")
+            g_scheduleName = selected_file.DirFileName
+            g_bBrowse = True
+            break
+        
+######################## Request ################################
+def PostLogin():
+    global g_client
+    global g_ctrl
+    if(g_client is None or g_client.IsConnected()):
+        g_client = ArbinClient()
+        g_client.OnConnectionChanged += Client_OnConnectionChanged
+        g_ctrl.LoginFeedEvent += LoginFeedbackEvent
+        g_ctrl.AssignSchFeedBackEvent += AssignSchFeedBackEvent
+        g_ctrl.ArbinCommandAssignBarcodeInfoFeedBackEvent += AssignBarcodeInfoFeedBackEvent
+        g_ctrl.StartFeedEvent += StartFeedEvent
+        g_ctrl.BrowseFeedEvent += BrowseFeedEvent
 
-def createBrowseFileListArgs():
-    args = Arbin.Library.DataModel.TestManagement.BrowseFileListArgs()
-    args.SN = SN
-    args.FileType = Arbin.Library.DataModel.EAIFileType.Schedule
-    return args
+        g_ctrl.ListenSocketRecv( g_client )
+        result, err = g_client.ConnectAsync(ProgramConst.IP, ProgramConst.CTI_PORT, 0, Int32(0) ); 
+        if(result != 0):
+            print("[Demo] Please check the network or IP address")
+    else:
+        print("[Demo] Connected...")
 
-def createBarcodeArgs(barcode):
-    barcodeInfo = Arbin.Library.DataModel.Common.BarcodeInfo()
-    barcodeInfo.GlobalID = 1
-    barcodeInfo.Barcode = barcode
-    barcodeInfo.BarcodeType = Arbin.Library.DataModel.EBarcodeType.IV
+def Client_OnConnectionChanged(socket, e):
+    global g_ctrl
+    if(e.Connected):
+        print("[Demo] Connection to CTI established!")
+        # Calling the login command after a network connection
+        g_ctrl.PostUserLogin( socket, ProgramConst.USER, ProgramConst.PASSWORD )
 
-    args = Arbin.Library.DataModel.TestManagement.AssignBarcodeInfoArgs()
-    args.SN = SN
-    args.BarcodeInfos = List[Arbin.Library.DataModel.Common.BarcodeInfo]()
-    args.BarcodeInfos.Add(barcodeInfo)
-    return args
+def Assign(barcode):
+    global g_client
+    global g_ctrl
+    global g_scheduleName
+    g_ctrl.PostAssignSchedule(g_client , g_scheduleName, barcode, 0.0, 0.0, 0.0, 0.0, 0.0, False, channelIndex)
 
-def createStartChannelArgs(scheduleName,barcode):
-    channelResumeData = Arbin.Library.DataModel.Common.ChannelResumeData()
-    channelResumeData.ChannelID = 1
-    channelResumeData.TestNames = List[String]()
+def AssignBarcodeInfo(barcode):
+    global g_client
+    global g_ctrl
+    channel_type = ArbinCommandAssignBarcodeInfoFeed.EChannelType.IV
+    barcodeinfo = List[ArbinCommandAssignBarcodeInfoFeed.ChannelBarcodeInfo]()
+    # Create and populate ChannelBarcodeInfo objects
+    info = ArbinCommandAssignBarcodeInfoFeed.ChannelBarcodeInfo()
+    info.GlobalIndex = UInt16(channelIndex)
+    info.Barcode = barcode
+    barcodeinfo.Add(info)
+    g_ctrl.PostAssignBarcodeInfo(g_client, channel_type, barcodeinfo)
+
+def StartChannel(barcode):
+    global g_client
+    global g_ctrl
+    if(g_client is None or not g_client.IsConnected()):
+        print("[Demo] Failed Connect Status.")
+        return
     now = datetime.now()
     formatted_datetime = now.strftime('%Y-%m-%d_%H-%M')
     testName = f"{barcode}_{formatted_datetime}"
-    channelResumeData.TestNames.Add(f"{barcode}_{formatted_datetime}")
-    channelResumeData.ScheduleName = scheduleName
+    channels = List[UInt16]()
+    channels.Add(UInt16(channelIndex))
+    g_ctrl.PostStartChannel(g_client, testName, channels)
+    print(f"[Demo] Test will start with test name: {testName}")
 
-    args = Arbin.Library.DataModel.ChannelManagement.StartChannelArgs()
-    args.Creators = username
-    args.SN = SN
-    args.ChannelResumeDatas = List[Arbin.Library.DataModel.Common.ChannelResumeData]()
-    args.ChannelResumeDatas.Add(channelResumeData)
-    return args,testName
+def BrowseDirectory():
+    global g_client
+    global g_ctrl    
+    g_ctrl.PostBrowseDirectory(g_client, 'SCHEDULE')
 
-###############Event Listener#######################
-listenerStatus = 0  # 0 =  not recived, 1 = received success, string = error message
-fileList = []
-def barCodeEventHandler(*args):
-    global listenerStatus
-    result = next((x for x in args[0].BarcodeInfos if x.Result != "Success"), None)
-    if result == None:
-        listenerStatus = 1
-    else:
-        listenerStatus = result.Result
-
-def fileEventHandler(*args):
-    global listenerStatus
-    result = args[0].IsSuccess
-    if result:
-        listenerStatus = 1
-    else:
-        listenerStatus = args[0].FailedResults[0].Result
-
-def startChannelEventHandler(*args):
-    global listenerStatus
-    result = args[0].IsSuccess
-    if result:
-        listenerStatus = 1
-    else:
-        listenerStatus = args[0].FailedResults[0].Result
-
-def startBrowseFileEventHandler(*args):
-    global listenerStatus
-    global fileList
-    result = args[0].Result
-    if result == "Success":
-        fileList = []
-        for file in args[0].DirFileInfoList:
-            fileList.append(file.DirFileName)
-        listenerStatus = 1
-    else:
-        listenerStatus = args[0].FailedResults[0].Result
-########################Request################################
-args = mycreateAIClientArgs()
-err = System.Int32(0)
-
-def getSchedule(client):
-    global listenerStatus
-    client.OnBrowseFileList += startBrowseFileEventHandler
-    bGetSchedule = client.BrowseFileList(createBrowseFileListArgs())
-    if bGetSchedule == False:
-        print("[Demo] Get schedule failed,please restart and try again.")
-        return None
-    while listenerStatus == 0:
-        time.sleep(0.5)
-    if listenerStatus == 1:
-        listenerStatus = 0
-        print("[Demo] Get schedule succeeded!")
-        print("[Demo] Schedule list:")
-        for file in fileList:
-            print(file)
-        return input("\n[Demo] Please enter the schedule name for the test: ")
-    else:
-        print(f"[Demo] Get schedule failed, error message:{listenerStatus},please restart and try again.")
-        return None
-    
-def assignSchedule(client):
-    global listenerStatus
-    client.OnAssignFile += fileEventHandler
-    userInput = input("\n[Demo] To start the test with schedule \"test.sdx\" (Enter 'yes' or 'no' to show all the schedules): ")
-    if userInput == "yes":
-        scheduleName = 'test'
-    else:
-        scheduleName = getSchedule(client)
-    if scheduleName == None:
-        return None
-    bAssign = client.AssignFile(createScheduleArgs(scheduleName))
-    if bAssign == False:
-        print("[Demo] Assign schedule failed,please restart and try again.")
-        return None
-    while listenerStatus == 0:
-        time.sleep(0.5)
-    if listenerStatus == 1:
-        listenerStatus = 0
-        print(f"[Demo] Assign schedule succeeded! Schedule name: {scheduleName}.sdx")
-        return scheduleName
-    else:
-        print(f"[Demo] Assign schedule failed, error message: {listenerStatus},please restart and try again.")  
-        return None
-    
-def startChannel(client,scheduleName,barcode):
-    global listenerStatus
-    client.OnStartChannel += startChannelEventHandler
-    args,testName = createStartChannelArgs(scheduleName+".sdx",barcode)
-    bStartChannel = client.StartChannel(args)
-    if bStartChannel == False:
-        print("[Demo] Start Channel failed,please restart and try again.")
-    while listenerStatus == 0:
-        time.sleep(0.5)
-    if listenerStatus == 1:
-        print(f"[Demo] Start Channel succeeded! Test Name: {testName}")
-    else:
-        print(f"[Demo] Start Channel failed, error message {listenerStatus},please restart and try again.")
-    
-def getBarcode(client):
-    global listenerStatus
-    client.OnAssignBarcodeInfo += barCodeEventHandler
-    while True:
-        userInputBarcode = input("[Demo] Please enter a barcode:").strip()
-        if userInputBarcode.startswith( 'a' ):
-            barcodeArg = createBarcodeArgs(userInputBarcode)
-            bSend = client.AssignBarcodeInfo(barcodeArg)
-            if bSend == False:
-                print("[Demo] Assign Barcode failed,please try again.")
-                return None
-            while listenerStatus == 0:
-                time.sleep(0.5)
-            if listenerStatus == 1:
-                listenerStatus = 0
-                print("[Demo] Assign Barcode succeeded!")
-                return userInputBarcode
-            elif listenerStatus == 2:
-                print(f"[Demo] Assign Barcode failed, error message: {listenerStatus},please try again.")
-                return None
-        else:
-            print(f"[Demo] Sorry, '{userInputBarcode}' is a invalid barcode, please try again.")
-
-###########################Main#################################
+########################### Main #################################
 try:
-    client = AIClient.Core.AIClient.CreateAIClient(args, err)
-    if client[0] == None:
-        print(f"\n[Demo] Connection to AIClient failed! Please restart and try again.")
-    else:
-        bConnected = client[0].IsConnected()
-        if bConnected:
-            print(f"[Demo] Connection to AIClient established!")
-            print(f"\n[Demo] Welcome to HTE demo!")
-            scheduleResult = assignSchedule(client[0])
-            if scheduleResult != None:
-                barcodeResult = getBarcode(client[0])
-                if barcodeResult != None:
-                    startChannel(client[0],scheduleResult,barcodeResult)
-        else:
-            print(f"\n[Demo] Connection to AIClient failed! Please restart and try again.")
+    PostLogin()
+    while g_bLogin == False:
+        time.sleep(0.5)
+    print("[Demo] Login succeeded!")
+
+    print(f"[Demo] Welcome to HTE demo!")
+    barcode = input("Please the Barcode:")
+    AssignBarcodeInfo(barcode)
+    while g_bBarcode == False:
+        if g_bError:
+            print("[Demo] Error! Please restart and try again.")
+            exit()
+        time.sleep(0.5)
+
+    BrowseDirectory()
+    while g_bBrowse == False:
+        if g_bError:
+            print("[Demo] Error! Please restart and try again.")
+            exit()
+        time.sleep(0.5)
+
+    Assign(barcode)
+    while g_bSchedule == False:
+        if g_bError:
+            print("[Demo] Error! Please restart and try again.")
+            exit()
+        time.sleep(0.5)
+
+    StartChannel(barcode)
+    while g_bChannel == False:
+        if g_bError:
+            print("[Demo] Error! Please restart and try again.")
+            exit()
+        time.sleep(0.5)
+    print(f"[Demo] Demo ends, thank you.")  
 except Exception as e:
     print(f"\n[Demo] Error! Please restart and try again. Error messsage:{e}")
