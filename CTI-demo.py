@@ -18,7 +18,7 @@ class ProgramConst(object):
     __slots__ = ()
     USER = "admin"
     PASSWORD = "000000"
-    IP = "127.0.0.1"
+    IP = "192.168.3.8"
     CTI_PORT = 9031
 
 ProgramConst = ProgramConst()
@@ -29,10 +29,11 @@ g_bSchedule = False
 g_bBrowse = False
 g_bBarcode = False
 g_bChannel = False
+g_bStop = False
 g_client = None
 g_bError = False
 g_scheduleName = ""
-channelIndex = 0
+g_channelIndex = 0
 g_ctrl = ArbinControlLabView()
 g_ctrl.Start()
 
@@ -90,6 +91,13 @@ startChannelTokenMap = {
     ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_GO_STEP : 'CTI_START_GO_STEP',
     ArbinCommandStartChannelFeed.START_TOKEN.CTI_START_INVALID_PARALLEL : 'CTI_START_INVALID_PARALLEL',
 }
+stopChannelTokenMap = {
+    ArbinCommandStopChannelFeed.STOP_TOKEN.SUCCESS : 'SUCCESS',
+    ArbinCommandStopChannelFeed.STOP_TOKEN.STOP_INDEX : 'STOP_INDEX',
+    ArbinCommandStopChannelFeed.STOP_TOKEN.STOP_NOT_RUNNING: 'STOP_NOT_RUNNING',
+    ArbinCommandStopChannelFeed.STOP_TOKEN.STOP_CHANNEL_NOT_CONNECT : 'STOP_CHANNEL_NOT_CONNECT'
+}
+
 ############### Event Listener #######################
 def LoginFeedbackEvent(cmd):
     if(cmd is  None):
@@ -97,7 +105,6 @@ def LoginFeedbackEvent(cmd):
         return
     global g_IVChannelCount
     global g_bLogin
-    test = cmd.Result
     if(cmd.Result == ArbinCommandLoginFeed.LOGIN_RESULT.CTI_LOGIN_SUCCESS):
         g_bLogin = True 
     if(cmd is not None):
@@ -121,6 +128,16 @@ def StartFeedEvent(cmd):
         g_bChannel = True
     else:
         print("[Demo] Start Channel Failed! Error: {}".format(startChannelTokenMap[cmd.Result]))
+        g_bError = True
+
+def StopFeedEvent(cmd):
+    global g_bStop
+    global g_bError
+    if(cmd.Result == ArbinCommandStopChannelFeed.STOP_TOKEN.SUCCESS):
+        print(f"[Demo] Channel Stop succeeded!")
+        g_bStop = True
+    else:
+        print("[Demo] Channel Stop Failed! Error: {}".format(stopChannelTokenMap[cmd.Result]))
         g_bError = True
 
 def AssignBarcodeInfoFeedBackEvent(cmd):
@@ -155,7 +172,8 @@ def BrowseFeedEvent(cmd):
             g_scheduleName = selected_file.DirFileName
             g_bBrowse = True
             break
-        
+
+
 ######################## Request ################################
 def PostLogin():
     global g_client
@@ -167,6 +185,7 @@ def PostLogin():
         g_ctrl.AssignSchFeedBackEvent += AssignSchFeedBackEvent
         g_ctrl.ArbinCommandAssignBarcodeInfoFeedBackEvent += AssignBarcodeInfoFeedBackEvent
         g_ctrl.StartFeedEvent += StartFeedEvent
+        g_ctrl.StopFeedEvent += StopFeedEvent
         g_ctrl.BrowseFeedEvent += BrowseFeedEvent
 
         g_ctrl.ListenSocketRecv( g_client )
@@ -187,7 +206,7 @@ def Assign(barcode):
     global g_client
     global g_ctrl
     global g_scheduleName
-    g_ctrl.PostAssignSchedule(g_client , g_scheduleName, barcode, 0.0, 0.0, 0.0, 0.0, 0.0, False, channelIndex)
+    g_ctrl.PostAssignSchedule(g_client , g_scheduleName, barcode, 0.0, 0.0, 0.0, 0.0, 0.0, False, g_channelIndex)
 
 def AssignBarcodeInfo(barcode):
     global g_client
@@ -196,7 +215,7 @@ def AssignBarcodeInfo(barcode):
     barcodeinfo = List[ArbinCommandAssignBarcodeInfoFeed.ChannelBarcodeInfo]()
     # Create and populate ChannelBarcodeInfo objects
     info = ArbinCommandAssignBarcodeInfoFeed.ChannelBarcodeInfo()
-    info.GlobalIndex = UInt16(channelIndex)
+    info.GlobalIndex = UInt16(g_channelIndex)
     info.Barcode = barcode
     barcodeinfo.Add(info)
     g_ctrl.PostAssignBarcodeInfo(g_client, channel_type, barcodeinfo)
@@ -211,9 +230,17 @@ def StartChannel(barcode):
     formatted_datetime = now.strftime('%Y-%m-%d_%H-%M')
     testName = f"{barcode}_{formatted_datetime}"
     channels = List[UInt16]()
-    channels.Add(UInt16(channelIndex))
+    channels.Add(UInt16(g_channelIndex))
+    input(f"[Demo] Test will start with test name: {testName}, press Enter to start the test now")
     g_ctrl.PostStartChannel(g_client, testName, channels)
-    print(f"[Demo] Test will start with test name: {testName}")
+    
+
+def StopChannel():
+    global g_client
+    global g_ctrl
+    global g_channelIndex
+    inputStr = (input("[Demo] Press Enter to stop the test now"))
+    g_ctrl.PostStopChannel(g_client,g_channelIndex, True)
 
 def BrowseDirectory():
     global g_client
@@ -252,6 +279,13 @@ try:
 
     StartChannel(barcode)
     while g_bChannel == False:
+        if g_bError:
+            print("[Demo] Error! Please restart and try again.")
+            exit()
+        time.sleep(0.5)
+
+    StopChannel()
+    while g_bStop == False:
         if g_bError:
             print("[Demo] Error! Please restart and try again.")
             exit()
